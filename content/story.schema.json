@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Parallel Her Story Template",
+  "type": "object",
+  "required": ["version", "character", "chapters"],
+  "properties": {
+    "version": { "type": "string" },
+    "character": { "type": "object", "required": ["name", "portrait", "dilemma"] },
+    "chapters": {
+      "type": "array", "minItems": 5, "maxItems": 5,
+      "items": {
+        "type": "object", "required": ["title", "scene", "choices", "coach"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 30 },
+          "scene": { "type": "string", "maxLength": 220 },
+          "coach": { "type": "string", "maxLength": 80 },
+          "choices": { "type": "array", "minItems": 3, "maxItems": 3 }
+        }
+      }
+    }
+  }
+}
