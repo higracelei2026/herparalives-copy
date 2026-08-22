@@ -43,11 +43,13 @@ export default function CreatePage() {
 
   return <main><AppHeader />
     <section className="play-mode-head">
-      <p className="eyebrow dark">CHOOSE HOW TO BEGIN</p>
-      <h1>这一段平行人生，想从哪里开始？</h1>
-      <div className="play-mode-grid">
-        <article className="active"><span>01 · 我的故事</span><h2>描述我的处境</h2><p>AI 将现实经历脱敏为虚构角色，并按照你选择的故事风格编织后续人生。</p><a href="#custom-story">生成我的平行人生 ↓</a></article>
-        <article><span>02 · 她们的故事</span><h2>体验另一位女性的人生</h2><p>进入经本人授权与团队审核的故事库。未来也可以邀请公众女性分享一段被虚构改编的人生经历。</p><Link href="/lobby#stories">浏览女性故事库 →</Link></article>
+      <div className="play-mode-wrap">
+        <p className="eyebrow dark">CHOOSE HOW TO BEGIN</p>
+        <h1>这一段平行人生，想从哪里开始？</h1>
+        <div className="play-mode-grid">
+          <article className="active"><span>01 · 我的故事</span><h2>描述我的处境</h2><p>AI 将现实经历脱敏为虚构角色，并按照你选择的故事风格编织后续人生。</p><a href="#custom-story">生成我的平行人生 ↓</a></article>
+          <article><span>02 · 她们的故事</span><h2>体验另一位女性的人生</h2><p>进入经本人授权与团队审核的故事库。未来也可以邀请公众女性分享一段被虚构改编的人生经历。</p><Link href="/lobby#stories">浏览女性故事库 →</Link></article>
+        </div>
       </div>
     </section>
     <section className="create-layout" id="custom-story"><div>
