@@ -10,6 +10,9 @@ import { useEffect, useMemo, useState } from "react";
 
 const statLabels: Record<string, string> = { career: "事业", wisdom: "智慧", happiness: "幸福", relationship: "关系", courage: "勇气" };
 const sumChapter = (records: ChoiceRecord[]) => records.reduce<StatDelta>((sum, record) => { Object.entries(record.deltas).forEach(([key, value]) => { const stat = key as keyof StatDelta; sum[stat] = (sum[stat] || 0) + (value || 0); }); return sum; }, {});
+// iOS Safari cancels smooth programmatic scrolling when the layout changes in the same frame (e.g. a new chapter rendering), so jump instantly there and scroll smoothly elsewhere.
+const iosDevice = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const scrollToTop = () => { const ios = iosDevice(); window.setTimeout(() => { if (ios) window.scrollTo(0, 0); else window.scrollTo({ top: 0, behavior: "smooth" }); }, 60); };
 
 export default function PlayPage() {
   const id = String(useParams().runId); const router = useRouter(); const [run, setRun] = useState<GameRun>();
@@ -26,7 +29,7 @@ export default function PlayPage() {
     const record: ChoiceRecord = { nodeId: current.id, choiceId: selected.id, choiceLabel: selected.label, memory: selected.memory, deltas: selected.deltas, at: Date.now() };
     const withChoice = { ...run, choices: [...run.choices, record], updatedAt: Date.now() };
     saveRun(withChoice); setRun(withChoice); setSelectedChoiceId(selected.id);
-    window.setTimeout(() => document.getElementById("choice-outcome")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    window.setTimeout(() => { const el = document.getElementById("choice-outcome"); if (el) { if (iosDevice()) el.scrollIntoView(); else el.scrollIntoView({ behavior: "smooth", block: "start" }); } }, 50);
   };
   const continueStory = () => {
     if (!resolvedChoice) return;
@@ -36,7 +39,7 @@ export default function PlayPage() {
     const finished = Boolean(resolvedChoice.endsStory) || nextIndex < 0;
     const visited = run.visitedNodeIds?.length ? run.visitedNodeIds : nodes.slice(0, run.currentIndex + 1).map((node) => node.id);
     const next = { ...run, currentIndex: finished ? run.currentIndex : nextIndex, currentNodeId: finished ? current.id : nextNodeId, visitedNodeIds: finished || !nextNodeId ? visited : [...visited.filter((nodeId) => nodeId !== nextNodeId), nextNodeId], finished, updatedAt: Date.now() };
-    saveRun(next); setSelectedChoiceId(undefined); if (finished) router.push(`/ending/${run.id}`); else { setRun(next); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    saveRun(next); setSelectedChoiceId(undefined); if (finished) router.push(`/ending/${run.id}`); else { setRun(next); scrollToTop(); }
   };
   const previous = run.choices.at(-1);
   const chapterNumbers = [...new Set(nodes.map((node) => node.chapter))];
