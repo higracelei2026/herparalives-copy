@@ -1,0 +1,181 @@
+import "server-only";
+import type { z } from "zod";
+
+// Shared client for OpenAI-compatible chat endpoints (Alibaba Bailian DashScope by default).
+// The API key is read from the server environment only — it must never appear in
+// committed files, logs, or client responses. No third-party dependencies.
+
+export type LlmError =
+  | { code: "no_key" }
+  | { code: "timeout" }
+  | { code: "http"; status: number }
+  | { code: "parse" };
+
+export type LlmResult<T> = { ok: true; data: T } | { ok: false; error: LlmError };
+
+const DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+const MAX_TOKENS = 6000;
+// qwen3.7-max generates ~2000-3500 tokens of Chinese prose at 20-40 tok/s, so a
+// chapter-sized call needs ~110-160s. 170s × 2 + retry sleeps can exceed the 300s
+// route maxDuration in production (the route then returns 504 and the client shows
+// its retry state — graceful); locally the request simply finishes.
+const TIMEOUT_MS = 170_000;
+const MAX_ATTEMPTS = 2;
+
+export function llmConfigured(): boolean {
+  return Boolean(process.env.DASHSCOPE_API_KEY);
+}
+
+export function storyModel(): string {
+  // qwen-plus is ~2x faster and rarely times out (qwen3.7-max often exceeds 170s,
+  // and a timed-out generation is still billed). Set QWEN_STORY_MODEL=qwen3.7-max
+  // for the higher-quality tier.
+  return process.env.QWEN_STORY_MODEL || "qwen-plus";
+}
+
+export function structuredModel(): string {
+  return process.env.QWEN_STRUCTURED_MODEL || "qwen-plus";
+}
+
+type ChatOpts<T> = { model?: string; temperature?: number; maxTokens?: number; schema?: z.ZodType<T> };
+
+type PostResult = { status: number; text: string; retryAfter?: number };
+
+async function post(body: Record<string, unknown>): Promise<PostResult> {
+  const base = (process.env.LLM_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, "");
+  const response = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${process.env.DASHSCOPE_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  const retryAfter = Number(response.headers.get("retry-after") || 0) || undefined;
+  return { status: response.status, text: await response.text(), retryAfter };
+}
+
+function parseContent(content: string): unknown {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fenced) return JSON.parse(fenced[1]);
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Plain-text mode may wrap the JSON in prose — extract the outermost value.
+    const starts = [trimmed.indexOf("{"), trimmed.indexOf("[")].filter((i) => i >= 0);
+    const ends = [trimmed.lastIndexOf("}"), trimmed.lastIndexOf("]")];
+    const start = starts.length ? Math.min(...starts) : -1;
+    const end = Math.max(...ends);
+    if (start < 0 || end <= start) throw new Error("no JSON found in content");
+    return JSON.parse(trimmed.slice(start, end + 1));
+  }
+}
+
+export async function chatJSON<T>(system: string, user: string, opts?: ChatOpts<T>): Promise<LlmResult<T>> {
+  if (!llmConfigured()) return { ok: false, error: { code: "no_key" } };
+  const baseBody: Record<string, unknown> = {
+    model: opts?.model || structuredModel(),
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    temperature: opts?.temperature ?? 0.9,
+    max_tokens: opts?.maxTokens ?? MAX_TOKENS,
+    response_format: { type: "json_object" },
+  };
+  // Retry budget is small, so a failing attempt switches to the fast structured
+  // model (qwen-plus by default) instead of repeating a doomed slow call — qwen3.7-max
+  // chapter-sized generation can exceed the timeout, and qwen-plus finishes it fast.
+  const switchToFallback = (): boolean => {
+    if (opts?.model && baseBody.model !== structuredModel()) {
+      baseBody.model = structuredModel();
+      console.error(`[llm] retrying with ${structuredModel()}`);
+      return true;
+    }
+    return false;
+  };
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    let response: PostResult;
+    try {
+      response = await post(baseBody);
+    } catch (error) {
+      // network error / timeout — retry once unless we already did
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[llm] attempt ${attempt}: fetch failed: ${message}`);
+      if (attempt < MAX_ATTEMPTS) { switchToFallback(); await sleep(1500); continue; }
+      return { ok: false, error: { code: "timeout" } };
+    }
+    if (response.status === 429) {
+      console.error(`[llm] attempt ${attempt}: 429 (retry-after ${response.retryAfter ?? "?"})`);
+      if (attempt < MAX_ATTEMPTS) {
+        switchToFallback();
+        await sleep((response.retryAfter || 2) * 1000);
+        continue;
+      }
+      return { ok: false, error: { code: "http", status: 429 } };
+    }
+    if (response.status === 400 && /response_format/i.test(response.text) && baseBody.response_format) {
+      // Some models/versions reject json_object mode — retry once without it.
+      console.error(`[llm] attempt ${attempt}: 400 mentions response_format, retrying without it`);
+      delete baseBody.response_format;
+      continue;
+    }
+    if (response.status >= 500 || response.status === 401 || response.status === 404) {
+      console.error(`[llm] attempt ${attempt}: http ${response.status} ${response.text.slice(0, 200)}`);
+      if (attempt < MAX_ATTEMPTS) { switchToFallback(); await sleep(2000); continue; }
+      return { ok: false, error: { code: "http", status: response.status } };
+    }
+    if (response.status !== 200) {
+      console.error(`[llm] attempt ${attempt}: http ${response.status} ${response.text.slice(0, 200)}`);
+      return { ok: false, error: { code: "http", status: response.status } };
+    }
+    try {
+      const payload = JSON.parse(response.text) as { choices?: { message?: { content?: string } }[] };
+      const content = payload.choices?.[0]?.message?.content;
+      if (!content) throw new Error("empty content");
+      const data = JSON.parse(content) as T;
+      if (opts?.schema) {
+        const parsed = opts.schema.safeParse(data);
+        if (!parsed.success) {
+          const issues = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join(" | ");
+          const logContent = process.env.NODE_ENV === "production" ? JSON.stringify(content).slice(0, 200) : JSON.stringify(content);
+          console.error(`[llm] attempt ${attempt}: schema mismatch — top-level keys: ${JSON.stringify(Object.keys(data as object))} — content: ${logContent} — issues: ${issues.slice(0, 600)}`);
+          if (attempt < MAX_ATTEMPTS) {
+            const switched = switchToFallback();
+            // Some models (e.g. qwen-max) collapse nested objects into strings in
+            // json_object mode but produce proper structure in plain-text mode —
+            // only relevant when retrying the same model.
+            if (!switched && baseBody.response_format) {
+              console.error("[llm] retrying once without response_format");
+              delete baseBody.response_format;
+            }
+            continue;
+          }
+          return { ok: false, error: { code: "parse" } };
+        }
+        return { ok: true, data: parsed.data };
+      }
+      return { ok: true, data };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[llm] attempt ${attempt}: response parse failed: ${message}`);
+      if (attempt < MAX_ATTEMPTS) {
+        const switched = switchToFallback();
+        if (!switched && baseBody.response_format) {
+          console.error("[llm] retrying once without response_format");
+          delete baseBody.response_format;
+        }
+        await sleep(1500);
+        continue;
+      }
+      return { ok: false, error: { code: "parse" } };
+    }
+  }
+  return { ok: false, error: { code: "parse" } };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

@@ -23,10 +23,11 @@ export type StoryNode = {
   title: string;
   scene: string;
   dialogue?: string;
-  coach: string;
+  coach?: string;
   chapterEnd?: boolean;
   illustration?: string;
-  choices: StoryChoice[];
+  // Pure narration nodes have no choices — decisions only appear at key forks.
+  choices?: StoryChoice[];
 };
 
 export type Preset = {
@@ -62,6 +63,10 @@ export type StoryPreferences = {
   realism: number;
 };
 
+export type StoryPlanItem = { chapter: number; title: string; synopsis: string };
+
+export type StoryPlan = { chapters: number; items: StoryPlanItem[] };
+
 export type ChoiceRecord = {
   nodeId: string;
   choiceId: string;
@@ -76,6 +81,7 @@ export type GameRun = {
   character: CharacterCard;
   presetId?: string;
   story: StoryNode[];
+  plan?: StoryPlan;
   currentIndex: number;
   currentNodeId?: string;
   visitedNodeIds?: string[];
